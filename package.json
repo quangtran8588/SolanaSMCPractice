@@ -10,7 +10,7 @@
   "author": "",
   "license": "MIT",
   "scripts": {
-    "start": "ts-node src/client/main.ts",
+    "start": "ts-node src/client/main.js",
     "start-with-test-validator": "start-server-and-test 'solana-test-validator --reset --quiet' http://localhost:8899/health start",
     "lint": "eslint --ext .ts src/client/* && prettier --check \"src/client/**/*.ts\"",
     "lint:fix": "eslint --ext .ts src/client/* --fix && prettier --write \"src/client/**/*.ts\"",
@@ -26,11 +26,15 @@
     "@solana/web3.js": "^1.7.0",
     "borsh": "^0.6.0",
     "mz": "^2.7.0",
+    "bn.js": "^5.1.0",
+    "buffer": "6.0.3",
+    "buffer-layout": "^1.2.0",
     "yaml": "^1.10.2"
   },
   "devDependencies": {
     "@tsconfig/recommended": "^1.0.1",
     "@types/eslint": "^7.2.4",
+    "@types/bn.js": "^5.1.0",
     "@types/eslint-plugin-prettier": "^3.1.0",
     "@types/mz": "^2.7.2",
     "@types/prettier": "^2.1.5",

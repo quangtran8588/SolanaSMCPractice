@@ -1,41 +1,39 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
-import {
-  Keypair,
-  Connection,
-  PublicKey,
-  LAMPORTS_PER_SOL,
-  SystemProgram,
-  TransactionInstruction,
-  Transaction,
-  sendAndConfirmTransaction,
-} from '@solana/web3.js';
-import fs from 'mz/fs';
-import path from 'path';
-import * as borsh from 'borsh';
-
-import {getPayer, getRpcUrl, createKeypairFromFile} from './utils';
+const {
+  Keypair, Connection, PublicKey, LAMPORTS_PER_SOL,
+  SystemProgram, TransactionInstruction, Transaction,
+  sendAndConfirmTransaction
+} = require('@solana/web3.js');
+const fs = require('mz');
+const path = require('path');
+const borsh = require('borsh');
+const { getPayer, getRpcUrl, createKeypairFromFile } = require('./utils');
+const { Buffer } = require('buffer');
+const BN = require('bn.js');
+const assert = require('assert');
+const BufferLayout = require('buffer-layout');
 
 /**
  * Connection to the network
  */
-let connection: Connection;
+let connection;
 
 /**
  * Keypair associated to the fees' payer
  */
-let payer: Keypair;
+let payer;
 
 /**
  * Hello world's program id
  */
-let programId: PublicKey;
+let programId;
 
 /**
  * The public key of the account we are saying hello to
  */
-let greetedPubkey: PublicKey;
+let greetedPubkey;
 
 /**
  * Path to program files
@@ -59,34 +57,80 @@ const PROGRAM_KEYPAIR_PATH = path.join(PROGRAM_PATH, 'helloworld-keypair.json');
 /**
  * The state of a greeting account managed by the hello world program
  */
-class GreetingAccount {
-  counter = 0;
-  constructor(fields: {counter: number} | undefined = undefined) {
-    if (fields) {
-      this.counter = fields.counter;
-    }
+class Account {
+  constructor(balance, name, symbol) {
+    this.balance = balance;
+    this.name = name;
+    this.symbol = symbol;
   }
 }
 
 /**
  * Borsh schema definition for greeting accounts
  */
-const GreetingSchema = new Map([
-  [GreetingAccount, {kind: 'struct', fields: [['counter', 'u32']]}],
-]);
+const AccountSchema = new Map(
+  [
+    [
+      Account,
+      {
+        kind: 'struct',
+        fields: [
+          ['name', 'string'],
+          ['symbol', 'string'],
+          ['balance', 'u64']
+        ]
+      }
+    ]
+  ]
+);
+
+const value = new Account(0, 'Tether', 'USDT');
 
 /**
  * The expected size of each greeting account.
  */
-const GREETING_SIZE = borsh.serialize(
-  GreetingSchema,
-  new GreetingAccount(),
-).length;
+const ACCOUNT_SIZE = borsh.serialize(AccountSchema, value).length;
+
+class u64 extends BN {
+  /**
+   * Convert to Buffer representation
+   */
+  toBuffer() {
+    const a = super.toArray().reverse();
+    const b = Buffer.from(a);
+    if (b.length === 8) {
+      return b;
+    }
+    assert(b.length < 8, 'u64 too large');
+
+    const zeroPad = Buffer.alloc(8);
+    b.copy(zeroPad);
+    return zeroPad;
+  }
+
+  /**
+   * Construct a u64 from Buffer representation
+   */
+  static fromBuffer(buffer) {
+    assert(buffer.length === 8, `Invalid buffer length: ${buffer.length}`);
+    return new u64(
+      [...buffer]
+        .reverse()
+        .map(i => `00${i.toString(16)}`.slice(-2))
+        .join(''),
+      16,
+    );
+  }
+}
+
+const uint64 = (property = 'uint64') => {
+  return BufferLayout.blob(8, property);
+};
 
 /**
  * Establish a connection to the cluster
  */
-export async function establishConnection(): Promise<void> {
+async function establishConnection() {
   const rpcUrl = await getRpcUrl();
   connection = new Connection(rpcUrl, 'confirmed');
   const version = await connection.getVersion();
@@ -96,13 +140,13 @@ export async function establishConnection(): Promise<void> {
 /**
  * Establish an account to pay for everything
  */
-export async function establishPayer(): Promise<void> {
+async function establishPayer() {
   let fees = 0;
   if (!payer) {
     const {feeCalculator} = await connection.getRecentBlockhash();
 
     // Calculate the cost to fund the greeter account
-    fees += await connection.getMinimumBalanceForRentExemption(GREETING_SIZE);
+    fees += await connection.getMinimumBalanceForRentExemption(ACCOUNT_SIZE);
 
     // Calculate the cost of sending transactions
     fees += feeCalculator.lamportsPerSignature * 100; // wag
@@ -133,13 +177,13 @@ export async function establishPayer(): Promise<void> {
 /**
  * Check if the hello world BPF program has been deployed
  */
-export async function checkProgram(): Promise<void> {
+async function checkProgram() {
   // Read program id from keypair file
   try {
     const programKeypair = await createKeypairFromFile(PROGRAM_KEYPAIR_PATH);
     programId = programKeypair.publicKey;
   } catch (err) {
-    const errMsg = (err as Error).message;
+    const errMsg = err.message;
     throw new Error(
       `Failed to read program keypair at '${PROGRAM_KEYPAIR_PATH}' due to error: ${errMsg}. Program may need to be deployed with \`solana program deploy dist/program/helloworld.so\``,
     );
@@ -174,10 +218,10 @@ export async function checkProgram(): Promise<void> {
     console.log(
       'Creating account',
       greetedPubkey.toBase58(),
-      'to say hello to',
+      'to mint Tokens to',
     );
     const lamports = await connection.getMinimumBalanceForRentExemption(
-      GREETING_SIZE,
+      ACCOUNT_SIZE,
     );
 
     const transaction = new Transaction().add(
@@ -187,7 +231,7 @@ export async function checkProgram(): Promise<void> {
         seed: GREETING_SEED,
         newAccountPubkey: greetedPubkey,
         lamports,
-        space: GREETING_SIZE,
+        space: ACCOUNT_SIZE,
         programId,
       }),
     );
@@ -198,12 +242,23 @@ export async function checkProgram(): Promise<void> {
 /**
  * Say hello
  */
-export async function sayHello(): Promise<void> {
-  console.log('Saying hello to', greetedPubkey.toBase58());
+async function mintTo() {
+  const amount = 1000000000000;
+  const dataLayout = BufferLayout.struct([
+    uint64('amount'),
+  ])
+  const data = Buffer.alloc(dataLayout.span);
+  dataLayout.encode(
+    {
+      amount: new u64(amount).toBuffer(),
+    },
+    data,
+  );
+  console.log('Mint Tokens to', greetedPubkey.toBase58());
   const instruction = new TransactionInstruction({
     keys: [{pubkey: greetedPubkey, isSigner: false, isWritable: true}],
     programId,
-    data: Buffer.alloc(0), // All instructions are hellos
+    data: data,
   });
   await sendAndConfirmTransaction(
     connection,
@@ -215,20 +270,27 @@ export async function sayHello(): Promise<void> {
 /**
  * Report the number of times the greeted account has been said hello to
  */
-export async function reportGreetings(): Promise<void> {
+async function getBalance() {
   const accountInfo = await connection.getAccountInfo(greetedPubkey);
   if (accountInfo === null) {
     throw 'Error: cannot find the greeted account';
   }
-  const greeting = borsh.deserialize(
-    GreetingSchema,
-    GreetingAccount,
+
+  const account = borsh.deserialize(
+    AccountSchema,
+    Account,
     accountInfo.data,
   );
-  console.log(
-    greetedPubkey.toBase58(),
-    'has been greeted',
-    greeting.counter,
-    'time(s)',
-  );
+
+  console.log(account)
+
+  // console.log(
+  //   greetedPubkey.toBase58(),
+  //   'has balance',
+  //   account.balance.balance.toNumber(),
+  //   'of',
+  //   account.balance.symbol,
+  // );
 }
+
+module.exports = { establishConnection, establishPayer, checkProgram, mintTo, getBalance}
