@@ -23,17 +23,11 @@ let connection;
 /**
  * Keypair associated to the fees' payer
  */
-let payer;
 
 /**
  * Hello world's program id
  */
 let programId;
-
-/**
- * The public key of the account we are saying hello to
- */
-let greetedPubkey;
 
 /**
  * Path to program files
@@ -57,17 +51,39 @@ const PROGRAM_KEYPAIR_PATH = path.join(PROGRAM_PATH, 'helloworld-keypair.json');
 /**
  * The state of a greeting account managed by the hello world program
  */
+class TokenInfo {
+  constructor(fields) {
+    this.name = fields.name;
+    this.symbol = fields.symbol;
+    this.total_supply = fields.total_supply;
+  }
+}
+
 class Account {
-  constructor(balance, name, symbol) {
-    this.balance = balance;
-    this.name = name;
-    this.symbol = symbol;
+  constructor(fields) {
+    this.balance = fields.balance;
   }
 }
 
 /**
  * Borsh schema definition for greeting accounts
  */
+const TokenInfoSchema = new Map(
+  [
+    [
+      TokenInfo,
+      {
+        kind: 'struct',
+        fields: [
+          ['name', 'string'],
+          ['symbol', 'string'],
+          ['total_supply', 'u64']
+        ]
+      }
+    ]
+  ]
+);
+
 const AccountSchema = new Map(
   [
     [
@@ -75,8 +91,6 @@ const AccountSchema = new Map(
       {
         kind: 'struct',
         fields: [
-          ['name', 'string'],
-          ['symbol', 'string'],
           ['balance', 'u64']
         ]
       }
@@ -84,12 +98,14 @@ const AccountSchema = new Map(
   ]
 );
 
-const value = new Account(0, 'Tether', 'USDT');
+const token_info = new TokenInfo( {name: 'Tether', symbol: 'USDT', total_supply: 0} );
+const account_info = new Account( {balance: 0} );
 
 /**
  * The expected size of each greeting account.
  */
-const ACCOUNT_SIZE = borsh.serialize(AccountSchema, value).length;
+const ACCOUNT_SIZE = borsh.serialize(AccountSchema, account_info).length;
+const TOKEN_INFO_SIZE = borsh.serialize(TokenInfoSchema, token_info).length;
 
 class u64 extends BN {
   /**
@@ -140,8 +156,9 @@ async function establishConnection() {
 /**
  * Establish an account to pay for everything
  */
-async function establishPayer() {
+async function establishPayer(file) {
   let fees = 0;
+  let payer;
   if (!payer) {
     const {feeCalculator} = await connection.getRecentBlockhash();
 
@@ -151,7 +168,7 @@ async function establishPayer() {
     // Calculate the cost of sending transactions
     fees += feeCalculator.lamportsPerSignature * 100; // wag
 
-    payer = await getPayer();
+    payer = await getPayer(file);
   }
 
   let lamports = await connection.getBalance(payer.publicKey);
@@ -172,6 +189,8 @@ async function establishPayer() {
     lamports / LAMPORTS_PER_SOL,
     'SOL to pay for fees',
   );
+
+  return payer;
 }
 
 /**
@@ -204,93 +223,153 @@ async function checkProgram() {
   }
   console.log(`Using program ${programId.toBase58()}`);
 
-  // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
-  const GREETING_SEED = 'hello';
-  greetedPubkey = await PublicKey.createWithSeed(
-    payer.publicKey,
-    GREETING_SEED,
+  return programId;
+}
+
+async function create_account(main_account, seedMsg, programId, size) {
+  let account = await PublicKey.createWithSeed(
+    main_account.publicKey,
+    seedMsg,
     programId,
   );
-
-  // Check if the greeting account has already been created
-  const greetedAccount = await connection.getAccountInfo(greetedPubkey);
-  if (greetedAccount === null) {
+  const accountInfo = await connection.getAccountInfo(account);
+  if (accountInfo === null) {
     console.log(
-      'Creating account',
-      greetedPubkey.toBase58(),
-      'to mint Tokens to',
+      'Creating new account',
+      account.toBase58(),
+      'derive from program',
+      programId.toBase58()
     );
-    const lamports = await connection.getMinimumBalanceForRentExemption(
-      ACCOUNT_SIZE,
-    );
+    const lamports = await connection.getMinimumBalanceForRentExemption(size);
 
     const transaction = new Transaction().add(
       SystemProgram.createAccountWithSeed({
-        fromPubkey: payer.publicKey,
-        basePubkey: payer.publicKey,
-        seed: GREETING_SEED,
-        newAccountPubkey: greetedPubkey,
+        fromPubkey: main_account.publicKey,
+        basePubkey: main_account.publicKey,
+        seed: seedMsg,
+        newAccountPubkey: account,
         lamports,
-        space: ACCOUNT_SIZE,
+        space: size,
         programId,
       }),
     );
-    await sendAndConfirmTransaction(connection, transaction, [payer]);
+    await sendAndConfirmTransaction(connection, transaction, [main_account]);
   }
+  return account.toBase58();
 }
 
 /**
  * Say hello
  */
-async function mintTo() {
-  const amount = 1000000000000;
+async function mint(signer, token_holder, account, amount) {
+  const holderPubkey = new PublicKey(token_holder);
+  const accountPubkey = new PublicKey(account);
   const dataLayout = BufferLayout.struct([
+    BufferLayout.u8('method'),
     uint64('amount'),
   ])
   const data = Buffer.alloc(dataLayout.span);
   dataLayout.encode(
     {
+      method: 1,
       amount: new u64(amount).toBuffer(),
     },
     data,
   );
-  console.log('Mint Tokens to', greetedPubkey.toBase58());
+  console.log('Mint Tokens to', account);
   const instruction = new TransactionInstruction({
-    keys: [{pubkey: greetedPubkey, isSigner: false, isWritable: true}],
+    keys: [
+      {pubkey: holderPubkey, isSigner: false, isWritable: true},
+      {pubkey: accountPubkey, isSigner: false, isWritable: true},
+    ],
     programId,
     data: data,
   });
   await sendAndConfirmTransaction(
     connection,
     new Transaction().add(instruction),
-    [payer],
+    [signer],
+  );
+}
+
+async function transfer(signer, from, to, amount) {
+  const senderPubkey = new PublicKey(from);
+  const receiverPubkey = new PublicKey(to);
+  const dataLayout = BufferLayout.struct([
+    BufferLayout.u8('method'),
+    uint64('amount'),
+  ])
+  const data = Buffer.alloc(dataLayout.span);
+  dataLayout.encode(
+    {
+      method: 2,
+      amount: new u64(amount).toBuffer(),
+    },
+    data,
+  );
+  console.log('Transfer Tokens from', from, 'to', to);
+  console.log('Payer:', signer.publicKey.toBase58());
+  const instruction = new TransactionInstruction({
+    keys: [
+      {pubkey: senderPubkey, isSigner: false, isWritable: true},
+      {pubkey: receiverPubkey, isSigner: false, isWritable: true},
+    ],
+    programId,
+    data: data,
+  });
+  await sendAndConfirmTransaction(
+    connection,
+    new Transaction().add(instruction),
+    [signer],
   );
 }
 
 /**
  * Report the number of times the greeted account has been said hello to
  */
-async function getBalance() {
-  const accountInfo = await connection.getAccountInfo(greetedPubkey);
+async function getBalance(account) {
+  const accountPubkey = new PublicKey(account);
+  const accountInfo = await connection.getAccountInfo(accountPubkey);
   if (accountInfo === null) {
     throw 'Error: cannot find the greeted account';
   }
 
-  const account = borsh.deserialize(
+  const balanceAcct = borsh.deserialize(
     AccountSchema,
     Account,
     accountInfo.data,
   );
 
-  console.log(account)
-
-  // console.log(
-  //   greetedPubkey.toBase58(),
-  //   'has balance',
-  //   account.balance.balance.toNumber(),
-  //   'of',
-  //   account.balance.symbol,
-  // );
+  console.log(
+    accountPubkey.toBase58(),
+    'has balance',
+    balanceAcct.balance.toNumber()
+  );
 }
 
-module.exports = { establishConnection, establishPayer, checkProgram, mintTo, getBalance}
+async function getTotalSupply(token_holder) {
+  const holderPubkey = new PublicKey(token_holder);
+  const tokenInfo = await connection.getAccountInfo(holderPubkey);
+  if (tokenInfo === null) {
+    throw 'Error: cannot find the greeted account';
+  }
+
+  const info = borsh.deserialize(
+    TokenInfoSchema,
+    TokenInfo,
+    tokenInfo.data,
+  );
+
+  console.log(
+    holderPubkey.toBase58(),
+    'has a total supply',
+    info.total_supply.toNumber(),
+    'of',
+    info.symbol
+  );
+}
+
+module.exports = { 
+  establishConnection, establishPayer, checkProgram, mint, transfer, getBalance, getTotalSupply, create_account,
+  ACCOUNT_SIZE, TOKEN_INFO_SIZE
+}

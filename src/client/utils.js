@@ -42,11 +42,13 @@ async function getRpcUrl() {
 /**
  * Load and parse the Solana CLI config file to determine which payer to use
  */
-async function getPayer() {
+async function getPayer(file) {
+// async function getPayer() {
   try {
-    const config = await getConfig();
-    if (!config.keypair_path) throw new Error('Missing keypair path');
-    return await createKeypairFromFile(config.keypair_path);
+    // const config = await getConfig();
+    // if (!config.keypair_path) throw new Error('Missing keypair path');
+    // return await createKeypairFromFile(config.keypair_path);
+    return await createKeypairFromFile(file);
   } catch (err) {
     console.warn(
       'Failed to create keypair from CLI config file, falling back to new random keypair',
